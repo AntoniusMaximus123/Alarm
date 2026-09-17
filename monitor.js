@@ -1,16 +1,25 @@
 require('dotenv').config();
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const http = require('http');
 
 const {
   NTFY_TOPIC,
   ANTHROPIC_API_KEY,
   TRADOVATE_URL,
   CHECK_INTERVAL_MS,
+  PORT,
 } = process.env;
 
 const INTERVAL = parseInt(CHECK_INTERVAL_MS || '60000', 10);
-const USER_DATA_DIR = '/data/chrome-profile'; // persistenter Login-Speicher (Render Persistent Disk)
+const USER_DATA_DIR = '/data/chrome-profile';
+
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Trade-Alarm laeuft.');
+}).listen(PORT || 3000, () => {
+  console.log('Health-Check-Server laeuft auf Port', PORT || 3000);
+});
 
 async function askClaudeIfActionNeeded(base64Image) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -57,10 +66,6 @@ Eingriff ist NICHT nötig bei: normalem Trade-Ablauf, "FERTIG", "RANGE LÄUFT", 
 }
 
 async function sendAlert(grund, handlung) {
-  // Wichtig, ehrlich gesagt: ntfy.sh hat KEINE eingebaute "wiederhole bis bestätigt"-Funktion
-  // wie Pushovers Notfall-Priorität. Als Ersatz wird hier bei jedem Check (alle INTERVAL ms)
-  // erneut alarmiert, solange der Fehler weiterbesteht - das wiederholt sich also von selbst,
-  // bis du das Problem behebst, nur eben nicht sekundengenau alle 30 Sek.
   const message = `Grund: ${grund}\nZu tun: ${handlung}`;
 
   const res = await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
