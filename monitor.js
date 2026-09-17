@@ -5,14 +5,14 @@ const http = require('http');
 const {
   NTFY_TOPIC,
   TRADOVATE_URL,
+  TRADOVATE_USERNAME,
+  TRADOVATE_PASSWORD,
   CHECK_INTERVAL_MS,
   PORT,
 } = process.env;
 
 const INTERVAL = parseInt(CHECK_INTERVAL_MS || '60000', 10);
-const USER_DATA_DIR = '/data/chrome-profile'; // persistenter Login-Speicher (Render Persistent Disk)
 
-// Fehler-Stichwörter im reinen Text der Seite - komplett kostenlos, keine KI noetig.
 const FEHLER_STICHWOERTER = [
   'Rejected',
   'rejected',
@@ -22,8 +22,6 @@ const FEHLER_STICHWOERTER = [
   'Fehler',
 ];
 
-// Winziger Webserver, NUR damit Render das als kostenlosen "Web Service" akzeptiert
-// und ein externer Ping-Dienst (z.B. cron-job.org) die App wachhalten kann.
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Trade-Alarm laeuft.');
@@ -47,6 +45,27 @@ async function sendAlert(grund) {
   console.log('ALARM gesendet:', message, res.status);
 }
 
+async function login(page) {
+  console.log('Versuche Login...');
+  await page.goto(TRADOVATE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+
+  await page.waitForSelector('input[type="email"], input[name="email"], input[type="text"]', { timeout: 20000 });
+
+  const emailSelector = await page.$('input[type="email"]') ? 'input[type="email"]'
+    : await page.$('input[name="email"]') ? 'input[name="email"]'
+    : 'input[type="text"]';
+
+  await page.type(emailSelector, TRADOVATE_USERNAME, { delay: 50 });
+  await page.type('input[type="password"]', TRADOVATE_PASSWORD, { delay: 50 });
+
+  await Promise.all([
+    page.keyboard.press('Enter'),
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+  ]);
+
+  console.log('Login-Versuch abgeschlossen.');
+}
+
 async function checkOnce(page) {
   await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
   const pageText = await page.evaluate(() => document.body.innerText);
@@ -63,12 +82,12 @@ async function checkOnce(page) {
 async function main() {
   const browser = await puppeteer.launch({
     headless: true,
-    userDataDir: USER_DATA_DIR,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900 });
-  await page.goto(TRADOVATE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+
+  await login(page);
 
   console.log('Monitor gestartet. Pruefintervall (ms):', INTERVAL);
 
