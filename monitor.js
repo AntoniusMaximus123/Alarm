@@ -1,19 +1,29 @@
 require('dotenv').config();
 const puppeteer = require('puppeteer');
-const fs = require('fs');
 const http = require('http');
 
 const {
   NTFY_TOPIC,
-  ANTHROPIC_API_KEY,
   TRADOVATE_URL,
   CHECK_INTERVAL_MS,
   PORT,
 } = process.env;
 
 const INTERVAL = parseInt(CHECK_INTERVAL_MS || '60000', 10);
-const USER_DATA_DIR = '/data/chrome-profile';
+const USER_DATA_DIR = '/data/chrome-profile'; // persistenter Login-Speicher (Render Persistent Disk)
 
+// Fehler-Stichwörter im reinen Text der Seite - komplett kostenlos, keine KI noetig.
+const FEHLER_STICHWOERTER = [
+  'Rejected',
+  'rejected',
+  'Execution Stopped',
+  'execution stopped',
+  'Error',
+  'Fehler',
+];
+
+// Winziger Webserver, NUR damit Render das als kostenlosen "Web Service" akzeptiert
+// und ein externer Ping-Dienst (z.B. cron-job.org) die App wachhalten kann.
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Trade-Alarm laeuft.');
@@ -21,52 +31,8 @@ http.createServer((req, res) => {
   console.log('Health-Check-Server laeuft auf Port', PORT || 3000);
 });
 
-async function askClaudeIfActionNeeded(base64Image) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 300,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/png', data: base64Image },
-            },
-            {
-              type: 'text',
-              text: `Das ist ein Screenshot des Tradovate Aktivitätsprotokolls / Panels eines Trading-Bots.
-Antworte NUR mit reinem JSON, kein Markdown, kein Fließtext davor oder danach:
-{"eingriff_noetig": true/false, "grund": "kurze Erklärung was passiert ist", "handlung": "was der Nutzer konkret jetzt tun soll, sehr knapp und konkret"}
-
-Eingriff ist NUR nötig bei: abgelehnter Order ("Rejected"), fehlendem Stop-Loss bei offener Position, Fehlermeldung, oder wenn der Bot-Status auf einen Fehlerzustand hindeutet.
-Eingriff ist NICHT nötig bei: normalem Trade-Ablauf, "FERTIG", "RANGE LÄUFT", "WARTE AUF BREAKOUT-CLOSE", "IM TRADE" mit korrekt gesetztem Stop/Ziel.`,
-            },
-          ],
-        },
-      ],
-    }),
-  });
-  const data = await res.json();
-  const text = data?.content?.find((b) => b.type === 'text')?.text || '{}';
-  const clean = text.replace(/```json|```/g, '').trim();
-  try {
-    return JSON.parse(clean);
-  } catch (e) {
-    console.error('Konnte Claude-Antwort nicht parsen:', text);
-    return { eingriff_noetig: false, grund: 'Parse-Fehler', handlung: '' };
-  }
-}
-
-async function sendAlert(grund, handlung) {
-  const message = `Grund: ${grund}\nZu tun: ${handlung}`;
+async function sendAlert(grund) {
+  const message = `Grund: ${grund}\nZu tun: Pruefe das Tradovate Aktivitaetsprotokoll und den offenen Trade manuell.`;
 
   const res = await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
     method: 'POST',
@@ -83,15 +49,14 @@ async function sendAlert(grund, handlung) {
 
 async function checkOnce(page) {
   await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
-  const screenshotPath = '/tmp/check.png';
-  await page.screenshot({ path: screenshotPath, fullPage: false });
-  const base64Image = fs.readFileSync(screenshotPath).toString('base64');
+  const pageText = await page.evaluate(() => document.body.innerText);
 
-  const result = await askClaudeIfActionNeeded(base64Image);
-  console.log(new Date().toISOString(), result);
+  const gefundenesStichwort = FEHLER_STICHWOERTER.find((wort) => pageText.includes(wort));
 
-  if (result.eingriff_noetig) {
-    await sendAlert(result.grund, result.handlung);
+  console.log(new Date().toISOString(), gefundenesStichwort ? `Fehler gefunden: ${gefundenesStichwort}` : 'Alles ok');
+
+  if (gefundenesStichwort) {
+    await sendAlert(`Auf der Seite wurde das Stichwort "${gefundenesStichwort}" gefunden.`);
   }
 }
 
@@ -105,10 +70,10 @@ async function main() {
   await page.setViewport({ width: 1400, height: 900 });
   await page.goto(TRADOVATE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
-  console.log('Monitor gestartet. Prüfintervall (ms):', INTERVAL);
+  console.log('Monitor gestartet. Pruefintervall (ms):', INTERVAL);
 
   setInterval(() => {
-    checkOnce(page).catch((e) => console.error('Fehler bei Prüfung:', e.message));
+    checkOnce(page).catch((e) => console.error('Fehler bei Pruefung:', e.message));
   }, INTERVAL);
 }
 
